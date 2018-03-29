@@ -1,15 +1,13 @@
 import ctypes
-import logging
-
 import os
 import subprocess
 import sys
-
-from RLBotFramework.utils.agent_creator import get_base_repo_path
-from RLBotFramework.utils.structures.bot_input_struct import get_player_input_list_type, PlayerInput
 import time
 
-from RLBotFramework.utils.structures.game_data_struct import GameTickPacket
+from RLBotFramework.grpcsupport.protobuf import game_data_pb2
+from RLBotFramework.utils.class_importer import get_base_repo_path
+from RLBotFramework.utils.structures.bot_input_struct import get_player_input_list_type, PlayerInput
+from RLBotFramework.utils.structures.game_data_struct import GameTickPacket, ByteBuffer
 from RLBotFramework.utils.structures.game_status import RLBotCoreStatus
 
 
@@ -26,6 +24,7 @@ class GameInterface:
     game_input_packet = None
     game_status_callback_type = None
     callback_func = None
+    extension = None
 
     def __init__(self, logger):
         self.logger = logger
@@ -39,6 +38,11 @@ class GameInterface:
         func.argtypes = [ctypes.POINTER(GameTickPacket)]
         func.restype = ctypes.c_int
 
+        # update live data proto
+        func = self.game.UpdateLiveDataPacketProto
+        func.argtypes = []
+        func.restype = ByteBuffer
+
         # start match
         func = self.game.StartMatch
         list_of_10 = get_player_input_list_type()
@@ -50,10 +54,20 @@ class GameInterface:
         func.argtypes = [PlayerInput, ctypes.c_int]
         func.restype = ctypes.c_int
 
+        # update player input
+        func = self.game.UpdatePlayerInputProto
+        func.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        func.restype = ctypes.c_int
+
         # send chat
         func = self.game.SendChat
         func.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_bool, self.game_status_callback_type, ctypes.c_void_p]
         func.restype = ctypes.c_int
+        self.logger.debug('game interface functions are setup')
+
+        # free the memory at the given pointer
+        func = self.game.Free
+        func.argtypes = [ctypes.c_void_p]
 
     def update_live_data_packet(self, game_tick_packet):
         rlbot_status = self.game.UpdateLiveDataPacket(game_tick_packet)
@@ -67,9 +81,10 @@ class GameInterface:
         self.wait_until_loaded()
         # self.game_input_packet.bStartMatch = True
         rlbot_status = self.game.StartMatch(self.game_input_packet.sPlayerConfiguration, self.participants,
-                                            self.create_status_callback(), None)
+                                            self.create_status_callback(
+                                                None if self.extension is None else self.extension.onMatchStart), None)
 
-        self.logger.debug(RLBotCoreStatus.status_list[rlbot_status])
+        self.logger.debug('Starting match with status: %s', RLBotCoreStatus.status_list[rlbot_status])
 
     def update_player_input(self, player_input, index):
         rlbot_status = self.game.UpdatePlayerInput(player_input, index)
@@ -90,7 +105,8 @@ class GameInterface:
     def wait_until_loaded(self):
         self.game.IsInitialized.restype = ctypes.c_bool
         is_loaded = self.game.IsInitialized()
-        self.logger.debug('dll is loaded: %s', is_loaded)
+        if not is_loaded:
+            self.logger.debug('DLL is loaded!')
         if not is_loaded:
             time.sleep(1)
             self.wait_until_loaded()
@@ -143,5 +159,34 @@ class GameInterface:
             self.logger.info(countdown_timer - i)
             time.sleep(1)
 
-    def create_status_callback(self):
-        return self.callback_func
+    def create_status_callback(self, callback=None):
+        """
+        Creates a callback for the rlbot status, uses default function if callback is none.
+        :param callback:
+        :return:
+        """
+        if callback is None:
+            return self.callback_func
+
+        def safe_wrapper(id, rlbotstatsus):
+            callback(rlbotstatsus)
+        return self.game_status_callback_type(wrap_callback(safe_wrapper))
+
+    def set_extension(self, extension):
+        self.game_status_callback_type(wrap_callback(self.game_status))
+        self.extension = extension
+
+    def update_controller_state(self, controller_state, index):
+        byte_size = controller_state.ByteSize()
+        serialized = controller_state.SerializeToString()
+        rlbot_status = self.game.UpdatePlayerInputProto(serialized, byte_size, index)
+        self.game_status(None, rlbot_status)
+
+    def update_live_data_proto(self):
+        byte_buffer = self.game.UpdateLiveDataPacketProto()
+        proto_string = ctypes.string_at(byte_buffer.ptr, byte_buffer.size)
+        packet = game_data_pb2.GameTickPacket()
+        packet.ParseFromString(proto_string)
+        self.game.Free(byte_buffer.ptr)  # Avoid a memory leak
+        self.game_status(None, "Success")
+        return packet
