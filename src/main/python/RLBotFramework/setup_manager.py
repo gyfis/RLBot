@@ -159,3 +159,7 @@ class SetupManager:
             bm = bot_manager.BotManagerStruct(terminate_event, callback_event, config_file, name, team,
                                               index, agent_class_wrapper, agent_telemetry_queue, queue_holder)
         bm.run()
+
+    def before_run(self):
+        if self.extension is not None:
+            self.extension.before_run()

@@ -82,7 +82,7 @@ class GameInterface:
         # self.game_input_packet.bStartMatch = True
         rlbot_status = self.game.StartMatch(self.start_match_configuration,
                                             self.create_status_callback(
-                                                None if self.extension is None else self.extension.onMatchStart), None)
+                                                None if self.extension is None else self.extension.on_match_start), None)
 
         self.logger.debug('Starting match with status: %s', RLBotCoreStatus.status_list[rlbot_status])
 
