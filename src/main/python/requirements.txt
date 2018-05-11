@@ -1,3 +1,4 @@
 psutil
 grpcio
 inputs
+websockets
